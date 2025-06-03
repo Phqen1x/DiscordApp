@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 import os
+import json
 
 intents = discord.Intents.all()
 
@@ -18,6 +19,13 @@ async def on_ready():
         print(f"Error syncing commands: {e}")
     bot.message_reactions = {}
     print(f'{bot.user} has connected to Discord!')
+
+    try:
+        with open('reaction_roles.json', 'r') as f:
+            pass
+    except FileNotFoundError:
+        with open('reaction_roles.json', 'w') as f:
+            json.dump({}, f)
 
 @bot.command()
 async def sync(ctx):
@@ -57,6 +65,7 @@ async def sync(ctx):
 #     await bot.process_commands(message)
 
 @bot.tree.command(name='reaction-role', description='Create a reaction role menu message')
+@commands.has_permissions(manage_roles=True)
 async def reaction_role(
         interaction: discord.Interaction,
         channel: discord.TextChannel,
@@ -74,13 +83,13 @@ async def reaction_role(
         role_name = parts[1].strip()
         role = discord.utils.get(interaction.guild.roles, name=role_name)
         if role:
-            roles_list.append((reaction_emoji, role))
+            roles_list.append((reaction_emoji, role.id))
         else:
             await interaction.response.send_message(f"Role {role_name} not found", ephemeral=True)
             return
 
     msg = await channel.send(description)
-    for reaction, role in roles_list:
+    for reaction, role.id in roles_list:
         try:
             await msg.add_reaction(reaction)
         except discord.HTTPException as e:
@@ -92,8 +101,28 @@ async def reaction_role(
     # Store the message ID and reaction in a dictionary to monitor later
     bot.message_reactions = getattr(bot, 'message_reactions', {})
     bot.message_reactions[msg.id] = roles_list
+
+    # Write the reactions and role IDs to a JSON file
+    try:
+        with open('reaction_roles.json', 'r') as f:
+            reaction_roles = json.load(f)
+    except FileNotFoundError:
+        reaction_roles = {}
+    except json.JSONDecodeError:
+        reaction_roles = {}
+
+    if str(msg.id) not in reaction_roles:
+        reaction_roles[str(msg.id)] = {}
+
+    for reaction, role_id in roles_list:
+        reaction_roles[str(msg.id)][reaction] = role_id
+
+    with open('reaction_roles.json', 'w') as f:
+        json.dump(reaction_roles, f)
+
     await interaction.response.send_message(f'Reaction role message created in {channel.mention}!', ephemeral=True)
 
+'''
 @bot.event
 async def on_reaction_add(reaction, user):
     if reaction.message.id in bot.message_reactions:
@@ -102,24 +131,28 @@ async def on_reaction_add(reaction, user):
             if reaction.emoji == reaction_emoji:
                 await user.add_roles(role)
                 print(f"Added role {role.name} to user {user.name}")
-
+'''
 @bot.tree.command(name='edit-role-menu', description='Edit a role menu')
+@commands.has_permissions(manage_roles=True)
 async def edit_role_menu(
         interaction: discord.Interaction,
-        message_id: int,
+        message_id: str,
         new_description: str = None,
         new_reactions: str = None
         ):
-    if message_id not in bot.message_reactions:
+
+    message_int = int(message_id)
+    if message_int not in bot.message_reactions:
         await interaction.response.send_message("Role Menu not found", ephemeral=True)
         return
     
-    message = await interaction.channel.fetch_message(message_id)
+    msg = await interaction.channel.fetch_message(message_id)
     if new_description:
-        await message.edit(content=new_description)
+        await msg.edit(content=new_description)
+
 
     if new_reactions:
-        reactions_list = new_reacrtions.split(',')
+        reactions_list = new_reactions.split(',')
         roles_list = []
         for reaction in reactions_list:
             parts = reaction.split(':')
@@ -127,63 +160,152 @@ async def edit_role_menu(
                 await interaction.response.send_message(f"Invalid reaction format: {reaction}", ephemeral=True)
                 return
             reaction_emoji = parts[0].strip()
-            role_name = parts[1].lower().strip()
+            role_name = parts[1].strip()
             role = discord.utils.get(interaction.guild.roles, name=role_name)
             if role:
-                roles_list.append((reaction_emoji, role))
+                roles_list.append((reaction_emoji, role.id))
             else:
                 await interaction.response.send_message(f"Role {role_name} not found", ephemeral=True)
                 return
-        await message.clear_reactions()
+        await msg.clear_reactions()
         for reaction_emoji, role in roles_list:
-            await message.add_reaction(reaction_emoji)
+            await msg.add_reaction(reaction_emoji)
         
         bot.message_reactions[message_id] = roles_list
-    
+    try:
+        with open('reaction_roles.json', 'r') as f:
+            reaction_roles = json.load(f)
+    except FileNotFoundError:
+        reaction_roles = {}
+    except json.JSONDecodeError:
+        reaction_roles = {}
+
+    if str(msg.id) not in reaction_roles:
+        reaction_roles[str(msg.id)] == {}
+        for reaction_emoji, role_id in bot.message_reactions[message.id]:
+            reaction_roles[str(msg.id)][reaction_emoji] = role_id
+    else:
+        reaction_roles[str(msg.id)] = {}
+        for reaction_emoji, role_id in bot.message_reactions[message_id]:
+            reaction_roles[str(msg.id)][reaction_emoji] = role_id
+
+    with open('reaction_roles.json', 'w') as f:
+        json.dump(reaction_roles, f)
+
     await interaction.response.send_message("Role menu edited successfully", ephemeral=True)
 
-'''
-reaction_roles = { '👑': 'Game Staff'}
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    print(f"Reaction detected: {payload.emoji}")
+    # Load the reaction role mapping
+    try:
+        with open('reaction_roles.json', 'r') as f:
+            reaction_roles = json.load(f)
+    except FileNotFoundError:
+        print("reaction_roles.json file not found")
+        return
+    except json.JSONDecodeError:
+        print("Invalid JSON in reaction_roles.json file")
+        return
+   
+    if str(payload.message_id) in reaction_roles:
+        if payload.emoji.name in reaction_roles[str(payload.message_id)]:
+            role_id = int(reaction_roles[str(payload.message_id)][payload.emoji.name])
+            if role_id:
+                # Get the role
+                print(f"Role ID: {role_id}")
+                guild = bot.get_guild(payload.guild_id)
+                role = discord.utils.get(guild.roles, id=int(role_id))
+                if role:
+                    print(f"Role: {role}")
+                    # Add the role to the member
+                    member = guild.get_member(payload.user_id)
+                    if member:
+                        try:
+                            await member.add_roles(role)
+                            print(f"Role added to {member.name}")
+                        except Exception as e:
+                            print(f"Error adding role: {e}")
+
 
 @bot.event
-async def on_raw_reaction_add(payload):
-    if payload.message_id == 1370116495224475769:
-        if payload.emoji.name == '✅':
-            guild = bot.get_guild(payload.guild_id)
-            member = await guild.fetch_member(payload.user_id)
-            role = discord.utils.get(guild.roles, name=reaction_roles[payload.emoji.name]) 
-            if role:
-                try: 
-                    await member.add_roles(role)
-                    print(f'Assigned {role.name} to {member.name}')
-                except Exception as e:
-                    print("Error assigning role:", e)
-        else:
-            print("Emoji name mismatched.")
-'''
-@bot.tree.command(name='default-role', description='A starting role on the server')
- def default_role(ctx, ):
+async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
+    try:
+        # Load the reaction role mapping
+        with open('reaction_roles.json', 'r') as f:
+            reaction_roles = json.load(f)
+    except FileNotFoundError:
+        print("reaction_roles.json file not found")
+        return
+    except json.JSONDecodeError:
+        print("Invalid JSON in reaction_roles.json file")
+        return
+    
+    # Get the role associated with the reaction
+    if str(payload.message_id) in reaction_roles:
+        if payload.emoji.name in reaction_roles[str(payload.message_id)]:
+            role_id = int(reaction_roles[str(payload.message_id)][payload.emoji.name])
+            if role_id:
+                # Get the role
+                guild = bot.get_guild(payload.guild_id)
+                role = discord.utils.get(guild.roles, id=int(role_id))
+                if role:
+                    # Remove the role from the member
+                    member = guild.get_member(payload.user_id)
+                    if member:
+                        try:
+                            await member.remove_roles(role)
+                            print(f"Role removed from {member.name}")
+                        except Exception as e:
+                            print(f"Error removing role: {e}")
+
+
+def get_default_role_id(guild_id):
+    try:
+        with open('default_roles.json', 'r') as f:
+            default_roles = json.load(f)
+            return default_roles.get(str(guild_id))
+    except FileNotFoundError:
+        return None
+
+
+def set_default_role_id(guild_id, role_id):
+    try:
+        with open('default_roles.json', 'r') as f:
+            default_roles = json.load(f)
+    except FileNotFoundError:
+        default_roles = {}
+
+    default_roles[str(guild_id)] = role_id
+
+    with open('default_roles.json', 'w') as f:
+        json.dump(default_roles, f)
+
+
+@bot.tree.command(name='set-default-role', description='Set a role to be given to members upon joining the server')
+@commands.has_permissions(manage_roles=True)
+async def set_default_role(interaction: discord.Interaction, role: discord.Role):
+    # Store the default role ID in a database or configuration file
+    set_default_role_id(interaction.guild.id, role.id)
+    # Save the default role ID
+    await interaction.response.send_message(f"Default role set to {role.name}", ephemeral=True)
+
+
+@bot.event
+async def on_member_join(member):
     print(f"{member.name} has joined the guild!")
     
-    guild = member.guild
-
-    role = discord.utils.get(guild.roles, name="Unverified")
-    if role:
-        try:
-            await member.add_roles(role)
-            print(f"Role added to {member.name}")
-        except discord.Forbidden:
-            print(f"Bot does not have permission to add role to {member.name}")
-        except discord.HTTPException as e:
-            print(f"Error adding role to {member.name}: {e, text}")
-    else:
-        print(f"Role not found: Unverified")
-    
-    
-    channel = bot.get_channel(1368764934019612803)
-    await channel.send(f"Welcome to {member.guild.name}, {member.mention}! Please ensure you abide by {bot.get_channel(1368785712505159710).mention} at all times!")
+    # Retrieve the default role ID from the database or configuration file
+    default_role_id = get_default_role_id(member.guild.id)
+    if default_role_id:
+        # Get the default role object
+        default_role = member.guild.get_role(int(default_role_id))
+        if default_role:
+            # Add the default role to the new member
+            await member.add_roles(default_role)
 
 @bot.command()
+@commands.has_permissions(administrator=True)
 async def reconnect(ctx):
     await ctx.send("Reconnecting...")
     # Disconnect the bot
@@ -191,5 +313,6 @@ async def reconnect(ctx):
     # Reconnect with the new code
     await bot.login(bot_token)
     await bot.start(bot_token)
+
 
 bot.run(bot_token)
